@@ -1,0 +1,15 @@
+ask user to provide request_id
+check request_id status
+
+if status == "approved":
+    show message "Drive access already approved."
+    terminate the flow
+
+if status == "in-progress" or status == "disapproved":
+    if request_age <= 72 hours:
+        show message "Request is being processed. Please check back later."
+        terminate the flow
+    else:
+        create ticket "Drive Access Re-Approval Needed"
+        show message "Access request delayed. A new approval ticket has been created."
+        terminate the flow
