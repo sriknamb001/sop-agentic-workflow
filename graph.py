@@ -248,7 +248,7 @@ chain = workflow.compile()
 # Invoke
 print("Invoking workflow...\n")
 initial_state = {
-    "sop_workflow": open("/Users/srikarnamburi/Documents/sop-agentic-workflow/sop_worflows/drive_access.txt").read(),
+    "sop_workflow": open("sop_worflows/drive_access.txt").read(),
     "execution_memory": [],
     "global_action_repository": drive_gar
 }
