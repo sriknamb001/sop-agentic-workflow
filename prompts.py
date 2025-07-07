@@ -1,81 +1,85 @@
-def state_llm_prompt(sop_workflow, execution_memory):
-    return  f'''
-    I want you to act as the action decision agent for the workflow automation task.
-    You will be provided with the following information.
-    1. Workflow
-    2. Execution Memory
-    Workflow consists of a logical sequence of actions. Execution Memory consists of the history of
-    actions, observations and feedback.
-    Your task is to decide the next action based on the workflow and execution memory.
-    *** If the execution memory is empty, output the first action from the workflow.
-    *** If the feedback for the current entry in execution memory mentions success, output the next
-    action as per the logic shown in the workflow.
-    *** If the feedback for the current entry in execution memory mentions fail, decide the next action
-    as follows.
-    – If observation indicates that the user wants to go back to any of the previous actions, perform
-    a semantic search in the current execution memory and find the relevant action to help the user.
-    Output the action as the next action. Post this you must continue the workflow from where it was
-    broken.
-    – If the observation clearly indicates that the user has a question or a query, output the action as seek
-    external knowledge. If feedback for the seek external knowledge action step is success, output the
-    previous valid action from the Execution Memory as the next action.
-    *** If the feedback for the last entry in execution memory mentions fail and observation does not
-    clearly indicate any of the above scenarios, decide the next action as follows. Carefully evaluate the
-    inter-dependence of the current failed action on the previous actions in the execution memory and
-    select the most logical previous action that needs to be repeated. Output it as the next action.
-    ### Workflow: {sop_workflow} ###
-    ### Execution Memory: {execution_memory} ###
-    Think step by step and output your thinking as thought.
-    Generate all the responses in the JSON format without any deviation. Output JSON should have
-    keys "thought, "next_action".
-    '''
+import json
+from typing import Any, Dict, List
 
-def action_llm_prompt(action,action_type,action_context):
-    return f'''
-    I want you to act as the action execution agent for the workflow automation task. You will be
-    provided with the following information.
-    1. Action in the workflow
-    2. Action type
-    3. Action context
-    Your task is to generate data to execute an action as per the action, action type and action context.
-    1. If action type includes ask_user_input, your task is to generate a polite question to the user using
-    the action. Output the question as user_interaction.
-    2. If action type includes api_call, your task is to extract and assign a correct value to each of the
-    required param using the action context. Output the required params and its values.
-    3. If action type includes external_knowledge, your task is formulate a short search like query from
-    the user’s question/query provided in the action context. Output the search query as search_query.
-    4. If action type includes message_to_user, your task is to generate the response to the user as
-    shown in the action context. For failure case, inform user that you are retrying the <action>. Output
-    the response as user_interaction.
-    ### Action: {action}
-    ### Action type: {action_type}
-    ### Action context: {action_context}
-    Think step by step and output your thinking as thought.
-    Generate all the responses in the JSON format without any deviation. Output JSON should have
-    keys "thought, "user_interaction", "params", "search_query".'''
+from graph import ExecutionMemoryDict
+from graph_utils import LLMTools
 
-def user_llm_prompt(question,user_reply,condition):
-    return f'''
-    I want you to act as the user interaction agent for the workflow automation task.
-    You will be provided with the following information.
-    1. Question asked to the user
-    2. User’s reply
-    3. Condition
-    Your tasks are as follows.
-    1. Verify if the user’s reply satisfies the condition.
-    If yes, set input_validation field as success. Otherwise set it as fail.
-    2. Extract all the entities from user’s reply and output the slots with key and value per entity. Assign
-    a distinctive name to the key as per the question for easy identification.
-    3. Generate a response to the user as follows.
-    If input_validation is success, provide a one-line acknowledgment message.
-    If input_validation field is fail:
-    ** If User’s reply clearly shows a question or a query, output the message that you are working on
-    it and politely ask user to wait.
-    ** If User’s reply is not a question or a query, provide a one-line acknowledgment message.
-    ### Question asked to the user: {question}
-    ### User’s reply: {user_reply}
-    ### Condition: User’s reply which indicates or includes {condition}
-    Think step by step and output your thinking as thought.
-    Generate all the responses in the JSON format without any deviation. Output JSON should have
-    keys "thought, "input_validation", "user_response", "slots".
-    '''
+
+def build_step_selection_prompt(available_steps: List[str], completed_steps: List[str], execution_memory: List[ExecutionMemoryDict]) -> str:
+    return f"""
+You are managing a workflow execution. Analyze the current state and determine:
+1. The next step to execute
+2. What tools you need to use for that step
+
+Available SOP Steps:
+{chr(10).join([f"{i+1}. {step}" for i, step in enumerate(available_steps)])}
+
+Completed Steps:
+{chr(10).join([f"- {step}" for step in completed_steps])}
+
+Recent Execution Memory:
+{chr(10).join([f"- {mem['action']}: {mem['feedback']}" for mem in execution_memory[-3:]])}
+
+Available Tools:
+- ask_user_input: Get input from user
+- show_message_to_user: Display message to user
+- api_call: Make API calls to check status/data
+- create_ticket: Create support tickets
+- send_notification: Send notifications
+
+Rules:
+1. Don't select completed steps
+2. Consider step dependencies
+3. Choose the most logical next step
+4. Identify which tools you'll need
+
+Respond with JSON format:
+{{
+    "next_step": "exact text of next step or WORKFLOW_COMPLETE",
+    "required_tools": ["tool1", "tool2"],
+    "reasoning": "why this step is next"
+}}
+"""
+
+
+def build_tool_execution_prompt(current_step: str, tools: LLMTools, user_context: Dict[str, Any], execution_memory: List[ExecutionMemoryDict]) -> str:
+    return f"""
+You are executing a workflow step. You have access to various tools to complete this step.
+
+Current Step: {current_step}
+
+Available Tools:
+{json.dumps(tools.get_tool_definitions(), indent=2)}
+
+User Context (from previous interactions):
+{json.dumps(user_context, indent=2)}
+
+Recent Execution Memory:
+{json.dumps(execution_memory[-3:], indent=2)}
+
+Your task is to:
+1. Analyze what this step requires
+2. Use the appropriate tools to complete it
+3. Provide a summary of what was accomplished
+
+You can call tools by responding with JSON in this format:
+{{
+    "tool_calls": [
+        {{
+            "tool_name": "tool_name",
+            "parameters": {{
+                "param1": "value1",
+                "param2": "value2"
+            }}
+        }}
+    ],
+    "reasoning": "Why you're using these tools"
+}}
+
+If no tools are needed, respond with:
+{{
+    "tool_calls": [],
+    "reasoning": "This step is complete or no tools needed",
+    "completion_status": "complete"
+}}
+"""
